@@ -2,8 +2,9 @@
 FastAPI роутер для работы с Маршрутными Картами (МК).
 
 Endpoints:
-  POST /api/mk/parse   — загрузить PDF, получить распарсенный MKParseResult
-  GET  /api/mk/{id}    — получить сохранённый результат (заглушка, готовится к БД)
+  POST /api/mk/parse     — загрузить PDF, получить распарсенный MKParseResult
+  POST /api/mk/validate  — валидировать данные МК агентом-Проверяющим
+  GET  /api/mk/fields    — справочник статусов полей
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from pydantic import BaseModel
 
 from app.parsers.mk_parser import MKParser
 from app.schemas.mk_schema import FieldValue, MKParseResult
+from app.schemas.validator_schema import ValidatorRequest, ValidatorResponse
+from app.agents.validator import ValidatorAgent
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mk", tags=["МК — Маршрутные карты"])
@@ -165,7 +168,8 @@ def _build_response(result: MKParseResult) -> MKParseResponse:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-_parser = MKParser()
+_parser  = MKParser()
+_validator = ValidatorAgent()  # подхватит ANTHROPIC_API_KEY из env
 
 
 @router.post(
@@ -231,6 +235,38 @@ async def parse_mk(
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+@router.post(
+    "/validate",
+    response_model=ValidatorResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Валидировать данные МК агентом-Проверяющим",
+    description=(
+        "Принимает данные МК (результат /parse) и опциональные подтверждения пользователя. "
+        "Агент-Проверяющий проверяет полноту и корректность данных. "
+        "Если все критичные поля заполнены → ready_for_calculation=true. "
+        "Иначе возвращает список проблем с указанием что нужно заполнить вручную."
+    ),
+)
+async def validate_mk(request: ValidatorRequest) -> ValidatorResponse:
+    try:
+        logger.info(
+            "MK validate request: mk=%s, confidence=%.2f, confirmations=%d",
+            request.mk_number, request.confidence, len(request.confirmations),
+        )
+        result = _validator.validate(request)
+        logger.info(
+            "MK validate done: status=%s, ready=%s, issues=%d",
+            result.status, result.ready_for_calculation, len(result.issues),
+        )
+        return result
+    except Exception as e:
+        logger.error("MK validate failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка валидации МК: {e}",
+        )
 
 
 @router.get(
