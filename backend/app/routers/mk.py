@@ -6,6 +6,7 @@ Endpoints:
   POST /api/mk/validate   — валидировать данные МК агентом-Проверяющим
   POST /api/mk/calculate  — рассчитать BOM и себестоимость агентом-Расчётчиком
   POST /api/mk/procure    — найти поставщиков и сформировать RFQ агентом-Закупщиком
+  POST /api/mk/compare    — сравнить КП от поставщиков агентом-Сравнителем
   GET  /api/mk/fields     — справочник статусов полей
 """
 
@@ -24,9 +25,11 @@ from app.schemas.mk_schema import FieldValue, MKParseResult
 from app.schemas.validator_schema import ValidatorRequest, ValidatorResponse
 from app.schemas.calculator_schema import CalculatorRequest, CalculatorResponse
 from app.schemas.procurement_schema import ProcurementRequest, ProcurementResponse
+from app.schemas.comparator_schema import CompareBatchRequest, CompareBatchResponse
 from app.agents.validator import ValidatorAgent
 from app.agents.calculator import CalculatorAgent
 from app.agents.procurement import ProcurementAgent
+from app.agents.comparator import ComparatorAgent
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mk", tags=["МК — Маршрутные карты"])
@@ -178,6 +181,7 @@ _parser      = MKParser()
 _validator   = ValidatorAgent()    # подхватит ANTHROPIC_API_KEY из env
 _calculator  = CalculatorAgent()   # детерминированный, без API
 _procurement = ProcurementAgent()  # подхватит ANTHROPIC_API_KEY + TAVILY_API_KEY
+_comparator  = ComparatorAgent()   # детерминированный, без API
 
 
 @router.post(
@@ -340,6 +344,38 @@ async def procure_mk(request: ProcurementRequest) -> ProcurementResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка поиска поставщиков: {e}",
+        )
+
+
+@router.post(
+    "/compare",
+    response_model=CompareBatchResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Сравнить КП от поставщиков (weighted scoring)",
+    description=(
+        "Принимает список КП по одному или нескольким материалам. "
+        "Агент-Сравнитель присваивает взвешенный score каждому поставщику: "
+        "цена 40% + срок 25% + верификация 15% + НДС 10% + тип 10%. "
+        "Возвращает ранжированный список с рекомендацией."
+    ),
+)
+async def compare_quotes(request: CompareBatchRequest) -> CompareBatchResponse:
+    try:
+        logger.info(
+            "MK compare request: mk=%s, materials=%d",
+            request.mk_number, len(request.items),
+        )
+        result = _comparator.compare_batch(request)
+        logger.info(
+            "MK compare done: results=%d, warnings=%d",
+            len(result.results), len(result.warnings),
+        )
+        return result
+    except Exception as e:
+        logger.error("MK compare failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка сравнения КП: {e}",
         )
 
 
