@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +19,18 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# ── CORS ───────────────────────────────────────────────────────────────────────
+# Разрешённые origins: локальная разработка + продакшн (Railway/Vercel/кастомный)
+_default_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+_extra = os.getenv("ALLOWED_ORIGINS", "")  # через запятую: https://my.app.com,...
+_extra_origins = [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=_default_origins + _extra_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
