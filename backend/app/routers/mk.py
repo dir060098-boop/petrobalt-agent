@@ -2,9 +2,10 @@
 FastAPI роутер для работы с Маршрутными Картами (МК).
 
 Endpoints:
-  POST /api/mk/parse     — загрузить PDF, получить распарсенный MKParseResult
-  POST /api/mk/validate  — валидировать данные МК агентом-Проверяющим
-  GET  /api/mk/fields    — справочник статусов полей
+  POST /api/mk/parse      — загрузить PDF, получить распарсенный MKParseResult
+  POST /api/mk/validate   — валидировать данные МК агентом-Проверяющим
+  POST /api/mk/calculate  — рассчитать BOM и себестоимость агентом-Расчётчиком
+  GET  /api/mk/fields     — справочник статусов полей
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ from pydantic import BaseModel
 from app.parsers.mk_parser import MKParser
 from app.schemas.mk_schema import FieldValue, MKParseResult
 from app.schemas.validator_schema import ValidatorRequest, ValidatorResponse
+from app.schemas.calculator_schema import CalculatorRequest, CalculatorResponse
 from app.agents.validator import ValidatorAgent
+from app.agents.calculator import CalculatorAgent
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mk", tags=["МК — Маршрутные карты"])
@@ -168,8 +171,9 @@ def _build_response(result: MKParseResult) -> MKParseResponse:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-_parser  = MKParser()
-_validator = ValidatorAgent()  # подхватит ANTHROPIC_API_KEY из env
+_parser     = MKParser()
+_validator  = ValidatorAgent()   # подхватит ANTHROPIC_API_KEY из env
+_calculator = CalculatorAgent()  # детерминированный, без API
 
 
 @router.post(
@@ -266,6 +270,40 @@ async def validate_mk(request: ValidatorRequest) -> ValidatorResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка валидации МК: {e}",
+        )
+
+
+@router.post(
+    "/calculate",
+    response_model=CalculatorResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Рассчитать BOM и себестоимость",
+    description=(
+        "Принимает подтверждённые данные МК и список материалов. "
+        "Рассчитывает qty_required с коэффициентами отхода, себестоимость, "
+        "потребность в закупке (qty_to_purchase = qty_required - qty_in_stock). "
+        "Snapshot цен фиксируется в поле snapshot_at."
+    ),
+)
+async def calculate_mk(request: CalculatorRequest) -> CalculatorResponse:
+    try:
+        logger.info(
+            "MK calculate request: mk=%s, qty=%s, materials=%d",
+            request.mk_number, request.quantity, len(request.materials),
+        )
+        result = _calculator.calculate(request)
+        logger.info(
+            "MK calculate done: total_cost=%s, needs_purchase=%s, warnings=%d",
+            result.total_cost, result.needs_purchase, len(result.warnings),
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    except Exception as e:
+        logger.error("MK calculate failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка расчёта МК: {e}",
         )
 
 
