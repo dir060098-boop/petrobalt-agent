@@ -5,6 +5,7 @@ Endpoints:
   POST /api/mk/parse      — загрузить PDF, получить распарсенный MKParseResult
   POST /api/mk/validate   — валидировать данные МК агентом-Проверяющим
   POST /api/mk/calculate  — рассчитать BOM и себестоимость агентом-Расчётчиком
+  POST /api/mk/procure    — найти поставщиков и сформировать RFQ агентом-Закупщиком
   GET  /api/mk/fields     — справочник статусов полей
 """
 
@@ -22,8 +23,10 @@ from app.parsers.mk_parser import MKParser
 from app.schemas.mk_schema import FieldValue, MKParseResult
 from app.schemas.validator_schema import ValidatorRequest, ValidatorResponse
 from app.schemas.calculator_schema import CalculatorRequest, CalculatorResponse
+from app.schemas.procurement_schema import ProcurementRequest, ProcurementResponse
 from app.agents.validator import ValidatorAgent
 from app.agents.calculator import CalculatorAgent
+from app.agents.procurement import ProcurementAgent
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mk", tags=["МК — Маршрутные карты"])
@@ -171,9 +174,10 @@ def _build_response(result: MKParseResult) -> MKParseResponse:
 # Endpoints
 # ---------------------------------------------------------------------------
 
-_parser     = MKParser()
-_validator  = ValidatorAgent()   # подхватит ANTHROPIC_API_KEY из env
-_calculator = CalculatorAgent()  # детерминированный, без API
+_parser      = MKParser()
+_validator   = ValidatorAgent()    # подхватит ANTHROPIC_API_KEY из env
+_calculator  = CalculatorAgent()   # детерминированный, без API
+_procurement = ProcurementAgent()  # подхватит ANTHROPIC_API_KEY + TAVILY_API_KEY
 
 
 @router.post(
@@ -304,6 +308,38 @@ async def calculate_mk(request: CalculatorRequest) -> CalculatorResponse:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка расчёта МК: {e}",
+        )
+
+
+@router.post(
+    "/procure",
+    response_model=ProcurementResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Найти поставщиков и сформировать RFQ-письма",
+    description=(
+        "Принимает список материалов к закупке (qty_to_purchase > 0). "
+        "Агент-Закупщик ищет поставщиков в своей БД и через Tavily, "
+        "затем с помощью Claude формирует RFQ-письма на русском языке. "
+        "Без API-ключей возвращает шаблонные письма."
+    ),
+)
+async def procure_mk(request: ProcurementRequest) -> ProcurementResponse:
+    try:
+        logger.info(
+            "MK procure request: mk=%s, materials=%d, region=%s",
+            request.mk_number, len(request.materials), request.region,
+        )
+        result = _procurement.procure(request)
+        logger.info(
+            "MK procure done: suppliers=%d, rfq=%d, warnings=%d",
+            len(result.supplier_candidates), len(result.rfq_letters), len(result.warnings),
+        )
+        return result
+    except Exception as e:
+        logger.error("MK procure failed: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка поиска поставщиков: {e}",
         )
 
 
