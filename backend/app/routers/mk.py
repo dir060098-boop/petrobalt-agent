@@ -16,6 +16,7 @@ import tempfile
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
@@ -30,6 +31,13 @@ from app.agents.validator import ValidatorAgent
 from app.agents.calculator import CalculatorAgent
 from app.agents.procurement import ProcurementAgent
 from app.agents.comparator import ComparatorAgent
+from app.db.engine import get_db
+from app.db.repositories.route_cards import RouteCardsRepo
+from app.db.repositories.stock_balances import StockBalancesRepo
+from app.db.repositories.price_history import PriceHistoryRepo
+from app.db.repositories.purchase_requests import PurchaseRequestsRepo
+from app.db.repositories.suppliers import SuppliersRepo
+from app.services.storage import StorageService, StorageError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/mk", tags=["МК — Маршрутные карты"])
@@ -87,6 +95,8 @@ class MKParseResponse(BaseModel):
     total_pages: int
     parse_errors: List[str]
     missing_critical_fields: List[str]
+    route_card_id: Optional[str] = None  # UUID записи в БД (если DB подключена)
+    file_url: Optional[str] = None       # URL в Supabase Storage (если Storage подключён)
 
     # Заголовок МК
     mk_number: FieldOut
@@ -153,6 +163,8 @@ def _build_response(result: MKParseResult) -> MKParseResponse:
         total_pages=result.total_pages,
         parse_errors=result.parse_errors,
         missing_critical_fields=result.missing_critical_fields,
+        route_card_id=None,
+        file_url=None,
 
         mk_number=FieldOut.from_field(result.mk_number),
         article=FieldOut.from_field(result.article),
@@ -174,6 +186,106 @@ def _build_response(result: MKParseResult) -> MKParseResponse:
 
 
 # ---------------------------------------------------------------------------
+# DB helpers — best-effort (graceful degradation без реальной БД)
+# ---------------------------------------------------------------------------
+
+async def _enrich_materials_from_db(
+    materials: List[Any],
+) -> None:
+    """
+    Дополняет MaterialInput данными из БД:
+      • qty_in_stock  — из stock_balances  (если не задан вручную)
+      • unit_price    — из price_history   (если не задан вручную)
+
+    Изменяет список на месте; ошибки БД игнорируются.
+    """
+    from app.config import get_settings
+    if not get_settings().db_configured:
+        return
+    try:
+        async with get_db() as session:
+            stock_repo = StockBalancesRepo(session)
+            price_repo = PriceHistoryRepo(session)
+            for mat in materials:
+                if mat.qty_in_stock is None:
+                    qty = await stock_repo.get_available(mat.name)
+                    if qty > 0:
+                        mat.qty_in_stock = float(qty)
+                if mat.unit_price is None:
+                    price = await price_repo.get_latest_price(mat.name)
+                    if price is not None:
+                        mat.unit_price = float(price)
+    except Exception as exc:
+        logger.warning("_enrich_materials_from_db: %s", exc)
+
+
+async def _save_purchase_request(
+    route_card_id: Optional[str],
+    materials_to_buy: List[Any],
+    mk_number: str,
+) -> Optional[str]:
+    """
+    Сохраняет purchase_request в БД после расчёта.
+    Возвращает строковый UUID или None при ошибке.
+    """
+    from app.config import get_settings
+    if not get_settings().db_configured or not materials_to_buy:
+        return None
+    try:
+        import uuid as _uuid
+        rc_id = _uuid.UUID(route_card_id) if route_card_id else None
+        items = [
+            {
+                "name": m.name,
+                "unit": m.unit,
+                "qty_to_purchase": m.qty_to_purchase,
+                "unit_price": m.unit_price,
+            }
+            for m in materials_to_buy
+        ]
+        async with get_db() as session:
+            repo = PurchaseRequestsRepo(session)
+            req = await repo.create(route_card_id=rc_id, items=items)
+            return str(req.id)
+    except Exception as exc:
+        logger.warning("_save_purchase_request: %s", exc)
+        return None
+
+
+async def _fetch_db_suppliers(
+    material_names: List[str],
+    region: str,
+) -> List[Any]:
+    """
+    Ищет поставщиков в БД по региону.
+    Возвращает список SupplierCandidate или [] при ошибке.
+    """
+    from app.config import get_settings
+    from app.schemas.procurement_schema import SupplierCandidate
+    if not get_settings().db_configured:
+        return []
+    try:
+        async with get_db() as session:
+            repo = SuppliersRepo(session)
+            rows = await repo.search(region=region, limit=10)
+            candidates = []
+            for s in rows:
+                candidates.append(SupplierCandidate(
+                    name=s.name,
+                    contact=s.contacts,
+                    region=s.region,
+                    source="db",
+                    materials_supplied=material_names,  # консервативно: все материалы
+                    notes=f"{'✓ Верифицирован' if s.verified else ''} "
+                          f"{'НДС' if s.vat_registered else 'без НДС'}".strip(),
+                ))
+            return candidates
+    except Exception as exc:
+        logger.warning("_fetch_db_suppliers: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -182,6 +294,7 @@ _validator   = ValidatorAgent()    # подхватит ANTHROPIC_API_KEY из e
 _calculator  = CalculatorAgent()   # детерминированный, без API
 _procurement = ProcurementAgent()  # подхватит ANTHROPIC_API_KEY + TAVILY_API_KEY
 _comparator  = ComparatorAgent()   # детерминированный, без API
+_storage     = StorageService()    # подхватит SUPABASE_* из env
 
 
 @router.post(
@@ -192,6 +305,8 @@ _comparator  = ComparatorAgent()   # детерминированный, без 
     description=(
         "Принимает PDF-файл Маршрутной Карты (МК). "
         "Возвращает все извлечённые поля с их статусами (extracted / missing). "
+        "Файл сохраняется в Supabase Storage (если настроен), "
+        "результат парсинга — в БД route_cards (если настроена). "
         "Файл временно сохраняется и автоматически удаляется после парсинга."
     ),
 )
@@ -227,7 +342,6 @@ async def parse_mk(
     try:
         logger.info("MK parse request: file=%s, size=%d bytes", file.filename, len(content))
         result = _parser.parse(tmp_path)
-        response = _build_response(result)
 
         logger.info(
             "MK parse done: mk=%s, confidence=%.2f, planned=%d, actual=%d, errors=%d",
@@ -237,8 +351,6 @@ async def parse_mk(
             len(result.actual_materials),
             len(result.parse_errors),
         )
-        return response
-
     except Exception as e:
         logger.error("MK parse failed for %s: %s", file.filename, e, exc_info=True)
         raise HTTPException(
@@ -247,6 +359,31 @@ async def parse_mk(
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
+    # ── Upload PDF to Supabase Storage (non-blocking, best-effort) ────────────
+    file_url: str | None = None
+    try:
+        file_url = await _storage.upload_mk_pdf(content, file.filename)
+    except StorageError as e:
+        logger.warning("Storage upload skipped: %s", e)
+
+    # ── Persist parse result to DB (non-blocking, best-effort) ────────────────
+    route_card_id: str | None = None
+    try:
+        from app.config import get_settings
+        if get_settings().db_configured:
+            async with get_db() as session:
+                repo = RouteCardsRepo(session)
+                card = await repo.save_parse_result(result, file_url=file_url)
+                route_card_id = str(card.id)
+                logger.info("RouteCard сохранён: id=%s", route_card_id)
+    except Exception as e:
+        logger.warning("DB сохранение пропущено: %s", e)
+
+    response = _build_response(result)
+    response.route_card_id = route_card_id
+    response.file_url = file_url
+    return response
 
 
 @router.post(
@@ -294,6 +431,9 @@ async def validate_mk(request: ValidatorRequest) -> ValidatorResponse:
     ),
 )
 async def calculate_mk(request: CalculatorRequest) -> CalculatorResponse:
+    # ── Обогащаем материалы данными из БД (best-effort) ──────────────────────
+    await _enrich_materials_from_db(request.materials)
+
     try:
         logger.info(
             "MK calculate request: mk=%s, qty=%s, materials=%d",
@@ -304,7 +444,6 @@ async def calculate_mk(request: CalculatorRequest) -> CalculatorResponse:
             "MK calculate done: total_cost=%s, needs_purchase=%s, warnings=%d",
             result.total_cost, result.needs_purchase, len(result.warnings),
         )
-        return result
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     except Exception as e:
@@ -313,6 +452,21 @@ async def calculate_mk(request: CalculatorRequest) -> CalculatorResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка расчёта МК: {e}",
         )
+
+    # ── Сохраняем purchase_request если есть позиции к закупке ───────────────
+    materials_to_buy = [m for m in result.materials if m.qty_to_purchase > 0]
+    purchase_request_id = await _save_purchase_request(
+        route_card_id=getattr(request, "route_card_id", None),
+        materials_to_buy=materials_to_buy,
+        mk_number=request.mk_number,
+    )
+    if purchase_request_id:
+        logger.info("PurchaseRequest сохранён: id=%s", purchase_request_id)
+        result.warnings.append(
+            f"[DB] Заявка на закупку создана: id={purchase_request_id}"
+        )
+
+    return result
 
 
 @router.post(
@@ -328,10 +482,22 @@ async def calculate_mk(request: CalculatorRequest) -> CalculatorResponse:
     ),
 )
 async def procure_mk(request: ProcurementRequest) -> ProcurementResponse:
+    # ── Подгружаем поставщиков из БД (best-effort) ───────────────────────────
+    if not request.db_suppliers:
+        mat_names = [m.name for m in request.materials]
+        db_sup = await _fetch_db_suppliers(mat_names, request.region)
+        if db_sup:
+            # pydantic модели иммутабельны — создаём копию с обновлёнными данными
+            request = request.model_copy(update={"db_suppliers": db_sup})
+            logger.info(
+                "MK procure: подгружено %d поставщиков из БД", len(db_sup)
+            )
+
     try:
         logger.info(
-            "MK procure request: mk=%s, materials=%d, region=%s",
-            request.mk_number, len(request.materials), request.region,
+            "MK procure request: mk=%s, materials=%d, region=%s, db_suppliers=%d",
+            request.mk_number, len(request.materials),
+            request.region, len(request.db_suppliers),
         )
         result = _procurement.procure(request)
         logger.info(

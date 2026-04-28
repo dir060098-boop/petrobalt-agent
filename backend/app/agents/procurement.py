@@ -163,8 +163,15 @@ class ProcurementAgent:
                 warnings=[],
             )
 
-        suppliers: List[SupplierCandidate] = []
+        # Seed с поставщиками из БД (переданы роутером)
+        suppliers: List[SupplierCandidate] = list(request.db_suppliers)
         rfq_letters: List[RFQLetter] = []
+
+        if suppliers:
+            logger.info(
+                "ProcurementAgent: %d поставщиков из БД (пропускаем их в веб-поиске)",
+                len(suppliers),
+            )
 
         if self._claude:
             try:

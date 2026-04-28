@@ -51,6 +51,9 @@ class CalculatorRequest(BaseModel):
     # Опционально: переопределить дефолтный коэффициент отхода для всего МК
     default_waste_factor: Optional[float] = None
 
+    # Ссылка на route_card в БД (для сохранения purchase_request)
+    route_card_id: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Выходные данные

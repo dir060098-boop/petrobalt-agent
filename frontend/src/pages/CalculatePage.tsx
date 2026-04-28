@@ -24,6 +24,8 @@ export function CalculatePage() {
     }))
 
   const [materials, setMaterials] = useState<MaterialInput[]>(initMaterials)
+  // Флаг: поля, заполненные автоматически из БД, имеют значение != null из init
+  // (фронтенд не знает заранее — просто подсветим непустые поля подсказкой)
 
   const mutation = useMutation({
     mutationFn: calculateMK,
@@ -51,7 +53,14 @@ export function CalculatePage() {
   }
 
   function handleCalc() {
-    mutation.mutate({ mk_number: mkNumber, article, product_name: productName, quantity: qty, materials })
+    mutation.mutate({
+      mk_number: mkNumber,
+      article,
+      product_name: productName,
+      quantity: qty,
+      materials,
+      route_card_id: parseResult?.route_card_id ?? null,
+    })
   }
 
   const result = calcResult ?? mutation.data
@@ -115,9 +124,15 @@ export function CalculatePage() {
             ))}
           </tbody>
         </table>
-        <button onClick={handleCalc} className="btn-primary mt-5">
-          Рассчитать →
-        </button>
+        <div className="flex items-center justify-between mt-5">
+          <button onClick={handleCalc} className="btn-primary">
+            Рассчитать →
+          </button>
+          <p className="text-xs text-gray-400">
+            Цены и остатки склада подтягиваются из БД автоматически,
+            если не заданы вручную.
+          </p>
+        </div>
       </div>
 
       {/* Результат */}

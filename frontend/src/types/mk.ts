@@ -52,6 +52,8 @@ export interface MKParseResponse {
   total_pages: number
   parse_errors: string[]
   missing_critical_fields: string[]
+  route_card_id?: string | null   // UUID в БД (если подключена)
+  file_url?: string | null        // URL в Supabase Storage
 
   mk_number: FieldOut
   article: FieldOut
@@ -141,6 +143,7 @@ export interface CalculatorRequest {
   quantity: number
   materials: MaterialInput[]
   default_waste_factor?: number | null
+  route_card_id?: string | null  // передаём из parseResult для линковки purchase_request
 }
 
 export interface MaterialResult {

@@ -40,6 +40,13 @@ class ProcurementRequest(BaseModel):
     company_name: str = 'ООО "Петробалт Сервис"'
     contact_person: str = ""                   # подписант в письмах
 
+    # Предзагруженные поставщики из БД — роутер добавляет до вызова агента.
+    # Агент дополняет список результатами веб-поиска.
+    db_suppliers: List["SupplierCandidate"] = []
+
+    # Опциональная ссылка на route_card в БД (для сохранения purchase_request)
+    route_card_id: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Выходные данные
