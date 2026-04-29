@@ -21,6 +21,7 @@ COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
 
 # nginx:alpine использует /etc/nginx/templates/*.template → envsubst при старте
 # Переменные: PORT (Railway), BACKEND_URL (URL FastAPI-сервиса)
+# Railway выставляет PORT сам; 80 — дефолт для локальной разработки
 ENV PORT=80
 ENV BACKEND_URL=http://localhost:8000
 
