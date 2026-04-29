@@ -1,19 +1,16 @@
-# Railway строит из корня репозитория — пути указываем от корня (backend/...)
+# Build context = backend/ (Railway Root Directory set to backend/)
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Зависимости (все пакеты имеют pre-built wheels, компилятор не нужен)
-COPY backend/pyproject.toml .
+COPY pyproject.toml .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
 
-# Код приложения и Alembic
-COPY backend/app     ./app
-COPY backend/alembic ./alembic
-COPY backend/alembic.ini .
+COPY app     ./app
+COPY alembic ./alembic
+COPY alembic.ini .
 
-# Непривилегированный пользователь
 RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser
 
