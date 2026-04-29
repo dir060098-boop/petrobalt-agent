@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "services": {
-    "backend": {
+    "petrobalt-agent": {
       "build": {
         "builder": "DOCKERFILE",
         "dockerfilePath": "backend/Dockerfile"
@@ -13,7 +13,7 @@
         "restartPolicyMaxRetries": 3
       }
     },
-    "frontend": {
+    "adaptable-possibility": {
       "build": {
         "builder": "DOCKERFILE",
         "dockerfilePath": "frontend/Dockerfile"
