@@ -10,9 +10,15 @@ import type {
   CompareBatchResponse,
 } from '../types/mk'
 
+// В production браузер обращается напрямую к backend URL (VITE_API_BASE_URL)
+// В dev — через Vite proxy на /api
+const BASE_URL = import.meta.env.VITE_API_BASE_URL
+  ? `${import.meta.env.VITE_API_BASE_URL}/api`
+  : '/api'
+
 const api = axios.create({
-  baseURL: '/api',
-  timeout: 60_000,
+  baseURL: BASE_URL,
+  timeout: 120_000,
 })
 
 // ── МК ───────────────────────────────────────────────────────────────────────
