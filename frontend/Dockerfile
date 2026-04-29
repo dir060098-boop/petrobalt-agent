@@ -1,27 +1,19 @@
-# ── Build stage: Vite ────────────────────────────────────────────────────────
+# Build context = frontend/ (Railway Root Directory set to frontend/)
 FROM node:20-slim AS builder
 
 WORKDIR /app
 
-COPY frontend/package.json frontend/package-lock.json ./
+COPY package.json package-lock.json ./
 RUN npm ci --silent
 
-COPY frontend/ ./
+COPY . ./
 RUN npm run build
-# Артефакт: /app/dist
 
-# ── Runtime stage: nginx ──────────────────────────────────────────────────────
 FROM nginx:1.27-alpine
 
-# Копируем собранную статику
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 
-# Копируем конфиг nginx (с переменными — подставляются через envsubst)
-COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
-
-# nginx:alpine использует /etc/nginx/templates/*.template → envsubst при старте
-# Переменные: PORT (Railway), BACKEND_URL (URL FastAPI-сервиса)
-# Railway выставляет PORT сам; 80 — дефолт для локальной разработки
 ENV PORT=80
 ENV BACKEND_URL=http://localhost:8000
 

@@ -4,7 +4,7 @@
     "petrobalt-agent": {
       "build": {
         "builder": "DOCKERFILE",
-        "dockerfilePath": "backend/Dockerfile"
+        "dockerfilePath": "Dockerfile"
       },
       "deploy": {
         "healthcheckPath": "/health",
@@ -16,7 +16,7 @@
     "adaptable-possibility": {
       "build": {
         "builder": "DOCKERFILE",
-        "dockerfilePath": "frontend/Dockerfile"
+        "dockerfilePath": "Dockerfile"
       },
       "deploy": {
         "healthcheckPath": "/",
